@@ -1,6 +1,6 @@
 // Header file to parse and interpret ELF (Executable and Linkable Format) files
 #ifndef ELF_H
-#define EL_H
+#define ELF_H
 /* e_ident size */
 #define EI_NIDENT 16
 
@@ -51,6 +51,17 @@ typedef struct {
     Elf64_Half    e_shstrndx;            /* Section header string table index */
 } Elf64_Ehdr;
 
-
+typedef struct {
+    Elf64_Word  sh_name;       /* Section name (index into section header string table) */
+    Elf64_Word  sh_type;       /* Section type (e.g., SHT_PROGBITS, SHT_NOBITS, SHT_SYMTAB) */
+    Elf64_Xword sh_flags;      /* Section flags (e.g., writable, allocatable, executable) */
+    Elf64_Addr  sh_addr;       /* Virtual address of section in memory (0 for non-allocated sections) */
+    Elf64_Off   sh_offset;     /* Offset of section in file image */
+    Elf64_Xword sh_size;       /* Size of section in bytes */
+    Elf64_Word  sh_link;       /* Section-specific link info (depends on section type) */
+    Elf64_Word  sh_info;       /* Extra info (depends on section type, e.g., symbol table) */
+    Elf64_Xword sh_addralign;  /* Alignment constraint (must be power of two, 0 or 1 = no alignment) */
+    Elf64_Xword sh_entsize;    /* Size of each entry if section holds fixed-size entries (0 otherwise) */
+} Elf64_Shdr;
 
 #endif
