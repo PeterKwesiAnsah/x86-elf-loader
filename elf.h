@@ -64,4 +64,77 @@ typedef struct {
     Elf64_Xword sh_entsize;    /* Size of each entry if section holds fixed-size entries (0 otherwise) */
 } Elf64_Shdr;
 
+typedef struct {
+    Elf64_Word  p_type;
+    Elf64_Word  p_flags;
+    Elf64_Off   p_offset;
+    Elf64_Addr  p_vaddr;
+    Elf64_Addr  p_paddr;
+    Elf64_Xword p_filesz;
+    Elf64_Xword p_memsz;
+    Elf64_Xword p_align;
+} Elf64_Phdr;
+
+typedef enum {
+    PT_NULL    = 0,
+    PT_LOAD    = 1,
+    PT_DYNAMIC = 2,
+    PT_INTERP  = 3,
+    PT_NOTE    = 4,
+    PT_SHLIB   = 5,
+    PT_PHDR    = 6,
+    PT_TLS     = 7,
+
+    PT_LOOS    = 0x60000000,
+    PT_HIOS    = 0x6fffffff,
+
+    PT_LOPROC  = 0x70000000,
+    PT_HIPROC  = 0x7fffffff
+} Elf_Phdr_Type;
+
+
+typedef enum {
+    SHT_NULL           = 0,
+    SHT_PROGBITS       = 1,
+    SHT_SYMTAB         = 2,
+    SHT_STRTAB         = 3,
+    SHT_RELA           = 4,
+    SHT_HASH           = 5,
+    SHT_DYNAMIC        = 6,
+    SHT_NOTE           = 7,
+    SHT_NOBITS         = 8,
+    SHT_REL            = 9,
+    SHT_SHLIB          = 10,
+    SHT_DYNSYM         = 11,
+
+    SHT_INIT_ARRAY     = 14,
+    SHT_FINI_ARRAY     = 15,
+    SHT_PREINIT_ARRAY  = 16,
+    SHT_GROUP          = 17,
+    SHT_SYMTAB_SHNDX   = 18,
+    SHT_RELR           = 19,
+
+    /* OS-specific */
+    SHT_LOOS           = 0x60000000,
+    SHT_HIOS           = 0x6fffffff,
+
+    /* Processor-specific */
+    SHT_LOPROC         = 0x70000000,
+    SHT_HIPROC         = 0x7fffffff,
+
+    /* Application-specific */
+    SHT_LOUSER         = 0x80000000,
+    SHT_HIUSER         = 0xffffffff
+} Elf_SectionType;
+
+
+typedef enum {
+    PF_NONE = 0,        // no permissions
+
+    PF_X = 1 << 0,      // Execute
+    PF_W = 1 << 1,      // Write
+    PF_R = 1 << 2       // Read
+} Elf_PFlags;
+
+
 #endif
