@@ -79,33 +79,21 @@ int main(int argc, char **args)
   // NB:loadseg.p_filesz must be a multiple of sysconf(SC_PAGE_SIZE)
   size_t mmap_length = loadseg.p_filesz;
   // file mapping is not enough, .bss tailed loadsegment
-  if (loadseg.p_memsz > loadseg.p_filesz)
+  // TOD0: handle .bss tailed loadsegment as some shares a page with previous load segments
+  // Any loadable segment , that have a page_aligned offset is a file page and hence needs to have a corresponding virtual memory page
+  // JUst found that, loadable segments can share memory pages/memory mappings see the fourth segment in readelf -lf main
+  mmap_length = ((mmap_length + 0) + page_size - 1) & ~(page_size - 1);
+  map_addr = mmap(NULL, loadseg.p_filesz, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, loadseg.p_offset);
+  if (map_addr == MAP_FAILED)
   {
-    // mmap_length = ((mmap_length + bss_size) + page_size - 1) & ~(page_size - 1);
-    // map_addr = mmap(NULL, mmap_length, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, loadseg.p_offset);
-
-    // if (map_addr == MAP_FAILED)
-    // {
-    //   perror("mmap failed:mapping the lowest file page");
-    //   return 1;
-    // }
-    // memset(map_addr + loadseg.p_filesz, '\0', bss_size);
-  }
-  else
-  {
-    mmap_length = ((mmap_length + 0) + page_size - 1) & ~(page_size - 1);
-    map_addr = mmap(NULL, loadseg.p_filesz, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, loadseg.p_offset);
-    if (map_addr == MAP_FAILED)
-    {
-      perror("mmap failed:mapping the lowest file page");
-      return 1;
-    }
+    perror("mmap failed:mapping the lowest file page");
+    return 1;
   }
 
   *vmaddr_ptr++ = (Elf64_Addr)map_addr;
   *fpaddr_ptr++ = (Elf64_Addr)loadseg.p_offset;
 
-  baddr = map_addr - (((loadseg.p_vaddr + page_size) - 1) & ~(page_size - 1));
+  baddr = map_addr - (((loadseg.p_offset + page_size) - 1) & ~(page_size - 1));
   __uint8_t *p_entry = baddr + ehdr.e_entry;
 
   pht_i++;
@@ -117,32 +105,103 @@ int main(int argc, char **args)
 
     size_t mmap_length = loadseg.p_filesz;
     size_t mmap_offset = loadseg.p_offset;
-    map_addr = baddr + (((loadseg.p_vaddr + page_size) - 1) & ~(page_size - 1));
-    //file mapping is not enough, .bss tailed loadsegment
+
+    // file mapping is not enough, .bss tailed loadsegment
+    // TOD0: handle .bss tailed loadsegment as some shares a page with previous load segments
     if (loadseg.p_memsz > loadseg.p_filesz)
     {
-      // mmap_length = ((mmap_length + bss_size) + page_size - 1) & ~(page_size - 1);
-      // mmap_offset = (mmap_offset + page_size - 1) & ~(page_size - 1);
-      // assert((((size_t)map_addr % page_size) == 0));
-      // map_addr = mmap(map_addr, mmap_length, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, mmap_offset);
+      // if...p_offset is not page_align...it means it exists in the most recent mapping
+      //  now the question...did it cover all file_sz??if yes, we don't need a new mapping if no..we need a new mapping
+      //  if p_offset nearest page(the page it was meant to be) is > than p_offset + file_size + bss_size if yes, we don't need a new mapping, then we zero initialize bss starting from p_offset + file_size
+      //  We create a  new mapping from p_offset nearest page , with length (p_offset_nearest_page - (p_offset + file_size + bss_size))
+      // after, we zero initialize bss starting from p_offset + file_size
+      // load_segments with a page_aligned offset, requires a corresponding mapping. one file page -> one memory page
+      if (loadseg.p_offset % page_size == 0)
+      {
+        map_addr = baddr + loadseg.p_offset;
+        map_addr = mmap(map_addr, mmap_length + bss_size, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, mmap_offset);
 
-      // if (map_addr == MAP_FAILED)
-      // {
-      //   perror("mmap failed:mapping a file page");
-      //   return 1;
-      // }
-      // memset(map_addr + loadseg.p_filesz, '\0', bss_size);
+        if (map_addr == MAP_FAILED)
+        {
+          perror("mmap failed:mapping a file page");
+          return 1;
+        }
+        memset(map_addr + loadseg.p_filesz, '\0', bss_size);
+      }
+      else
+      {
+        // Already covered by a mapping, but by how much??
+        __int8_t *start = (__int8_t *)((size_t)baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1)));
+        __int8_t *end = (__int8_t *)((size_t)map_addr + loadseg.p_offset + loadseg.p_filesz + bss_size);
+        if (end < start)
+        {
+          memset(map_addr + loadseg.p_offset + loadseg.p_filesz, '\0', bss_size);
+          pt_load_cnts++;
+          *vmaddr_ptr++ = ((Elf64_Addr)map_addr + loadseg.p_offset);
+          *fpaddr_ptr++ = (Elf64_Addr)loadseg.p_offset;
+          continue;
+        }
+        else
+        {
+          __int8_t *bss_start = map_addr + loadseg.p_offset + loadseg.p_filesz;
+          // we need a new mapping
+          map_addr = baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1));
+          map_addr = mmap(map_addr, end - start, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, ((mmap_offset + page_size - 1) & ~(page_size - 1)));
+          if (map_addr == MAP_FAILED)
+          {
+            perror("mmap failed:mapping a file page");
+            return 1;
+          }
+          memset(bss_start, '\0', bss_size);
+        }
+      }
     }
     else
     {
-      mmap_length = ((mmap_length + page_size) - 1) & ~(page_size - 1);
-      mmap_offset = (mmap_offset + page_size - 1) & ~(page_size - 1);
-      assert(((size_t)map_addr % page_size) == 0);
-      map_addr = mmap(map_addr, mmap_length, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, mmap_offset);
-      if (map_addr == MAP_FAILED)
+      // if...p_offset is not page_align...it means it exists in the most recent mapping
+      //  now the question...did it cover all file_sz??if yes, we don't need a new mapping if no..we need a new mapping
+      //  if p_offset nearest page(the page it was meant to be) is > than p_offset + file_size + bss_size if yes, we don't need a new mapping, then we zero initialize bss starting from p_offset + file_size
+      //  We create a  new mapping from p_offset nearest page , with length (p_offset_nearest_page - (p_offset + file_size + bss_size))
+      // after, we zero initialize bss starting from p_offset + file_size
+      // load_segments with a page_aligned offset, requires a corresponding mapping. one file page -> one memory page
+      if (loadseg.p_offset % page_size == 0)
       {
-        perror("mmap failed: mapping the a file page");
-        return 1;
+        // mmap_length = ((mmap_length + 0) + page_size - 1) & ~(page_size - 1);
+        //  assert((((size_t)map_addr % page_size) == 0));
+        map_addr = baddr + loadseg.p_offset;
+        map_addr = mmap(map_addr, mmap_length, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, mmap_offset);
+
+        if (map_addr == MAP_FAILED)
+        {
+          perror("mmap failed:mapping a file page");
+          return 1;
+        }
+      }
+      else
+      {
+        // Already covered by a mapping, but by how much??
+        __int8_t *start = (__int8_t *)((size_t)baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1)));
+        assert((((size_t)map_addr % page_size) == 0));
+        __int8_t *end = (__int8_t *)((size_t)map_addr + loadseg.p_offset + loadseg.p_filesz + 0);
+        if (end < start)
+        {
+          pt_load_cnts++;
+          *vmaddr_ptr++ = ((size_t)map_addr + loadseg.p_offset);
+          *fpaddr_ptr++ = (Elf64_Addr)loadseg.p_offset;
+          continue;
+        }
+        else
+        {
+          __int8_t *bss_start = map_addr + loadseg.p_offset + loadseg.p_filesz;
+          // we need a new mapping
+          map_addr = baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1));
+          map_addr = mmap(map_addr, (Elf64_Addr)end - (Elf64_Addr)start, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE, fd, ((mmap_offset + page_size - 1) & ~(page_size - 1)));
+          if (map_addr == MAP_FAILED)
+          {
+            perror("mmap failed:mapping a file page");
+            return 1;
+          }
+        }
       }
     }
 
