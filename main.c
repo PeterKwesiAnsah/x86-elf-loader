@@ -136,18 +136,20 @@ int main(int argc, char **args)
       {
         // Already covered by a mapping, but by how much??
         __int8_t *start = (__int8_t *)((size_t)baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1)));
-        __int8_t *end = (__int8_t *)((size_t)map_addr + loadseg.p_offset + loadseg.p_filesz + bss_size);
+        // distance between two load segs in file
+        Elf64_Off distance = (loadseg.p_offset - fpaddr_ptr[-1]);
+        __int8_t *end = (__int8_t *)((size_t)map_addr + distance + loadseg.p_filesz + bss_size);
         pt_load_cnts++;
-        *vmaddr_ptr++ = ((Elf64_Addr)map_addr + loadseg.p_offset);
+        *vmaddr_ptr++ = ((Elf64_Addr)map_addr + distance);
         *fpaddr_ptr++ = (Elf64_Addr)loadseg.p_offset;
         if (end < start)
         {
-          memset(map_addr + loadseg.p_offset + loadseg.p_filesz, '\0', bss_size);
+          memset(map_addr + distance + loadseg.p_filesz, '\0', bss_size);
           continue;
         }
         else
         {
-          __int8_t *bss_start = map_addr + loadseg.p_offset + loadseg.p_filesz;
+          __int8_t *bss_start = map_addr + distance + loadseg.p_filesz;
           // we need a new mapping
           map_addr = baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1));
           map_addr = mmap(map_addr, end - start, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE | MAP_FIXED, fd, ((mmap_offset + page_size - 1) & ~(page_size - 1)));
@@ -186,16 +188,17 @@ int main(int argc, char **args)
       {
         // Already covered by a mapping, but by how much??
         __int8_t *start = (__int8_t *)((size_t)baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1)));
-        assert((((size_t)map_addr % page_size) == 0));
-        __int8_t *end = (__int8_t *)((size_t)map_addr + loadseg.p_offset + loadseg.p_filesz + 0);
+        // distance between two load segs in file
+        Elf64_Off distance = (loadseg.p_offset - fpaddr_ptr[-1]);
+        __int8_t *end = (__int8_t *)((size_t)map_addr + distance + loadseg.p_filesz + 0);
         pt_load_cnts++;
-        *vmaddr_ptr++ = ((size_t)map_addr + loadseg.p_offset);
+        *vmaddr_ptr++ = ((size_t)map_addr + (loadseg.p_offset - fpaddr_ptr[-1]));
         *fpaddr_ptr++ = (Elf64_Addr)loadseg.p_offset;
         if (end < start)
           continue;
         else
         {
-          __int8_t *bss_start = map_addr + loadseg.p_offset + loadseg.p_filesz;
+          __int8_t *bss_start = map_addr + distance + loadseg.p_filesz;
           // we need a new mapping
           map_addr = baddr + ((mmap_offset + page_size - 1) & ~(page_size - 1));
           map_addr = mmap(map_addr, (Elf64_Addr)end - (Elf64_Addr)start, elf_pflags_to_mmap_prot((int)loadseg.p_flags), MAP_PRIVATE | MAP_FIXED, fd, ((mmap_offset + page_size - 1) & ~(page_size - 1)));
