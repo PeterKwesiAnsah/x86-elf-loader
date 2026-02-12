@@ -76,7 +76,7 @@ int LoadET(int fd, size_t page_size, char **interpath)
 
     Elf64_Off relap_offset = pht_start[pht_i].p_offset & ~(page_size - 1);
     Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
-    mmap(baddr + relap_vadress, pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
+    mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr %page_size)+  pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
     {
       perror("mmap failed");
       return 1;
