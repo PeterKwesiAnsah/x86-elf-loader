@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 
 #define MIN_ARG_COUNT 2
 
@@ -47,7 +48,9 @@ int LoadET(int fd, size_t page_size, char **interpath)
     if (pht_start[pht_i].p_type == PT_INTERP)
     {
       //
-    }
+    } // else if (pht_start[pht_i].p_type == PT_GNU_STACK){
+    // check to add PROT_EXEC to stack page
+    // }
     else if (pht_start[pht_i].p_type == PT_LOAD)
     {
       if (pht_start[pht_i].p_vaddr > max_vaddr)
@@ -77,6 +80,7 @@ int LoadET(int fd, size_t page_size, char **interpath)
     Elf64_Off relap_offset = pht_start[pht_i].p_offset & ~(page_size - 1);
     Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
     mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
+    if (addr == MAP_FAILED)
     {
       perror("mmap failed");
       return 1;
@@ -90,9 +94,6 @@ int LoadET(int fd, size_t page_size, char **interpath)
 
   close(fd);
   munmap(addr, fsize);
-  // setup stack
-  // setup a memory image for program interpretor
-  // jump to _start
   return 0;
 }
 
@@ -114,7 +115,16 @@ int main(int argc, char **args)
   {
     char *interpath = NULL;
     int status = LoadET(fd, page_size, &interpath);
-    printf("%s\n", interpath);
+    // TODO: randomize the highest address of the stack
+    __uint8_t *stackTop = (__uint8_t *)0x7fff6c845000;
+    struct rlimit lm;
+    size_t stack_max_size = getrlimit(RLIMIT_STACK, &lm);
+    __uint8_t *stackEnd = (size_t)0x7fff6c845000 - (stack_max_size & ~(page_size - 1));
+    //TODO: Tempororarily hold the args,env of the current process in the heap using sbreak
+    //TODO: Get size of env,args,allocate heap memory, move into heap, safely setup stack
+    //We are turning this child process into a process that executes <path-to-elf-file> [CLI args to be passed to during process. so MAP_FIXED | MAP_PRIVATE or MAP_PRIVATE
+    //Currently our stack have the necessary information we are trying to copy
+
     return status;
   }
 
