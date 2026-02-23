@@ -15,7 +15,7 @@ typedef struct
 {
   int argc;
   int envc;
-  __int8_t *top;
+  Elf64_Addr *sp;
   __uint8_t *envp;
   __int8_t *argp;
   Elf64_Addr *argv;
@@ -131,15 +131,17 @@ int main(int argc, char **args, char **envp)
   {
     char *interpath = NULL;
     int status = LoadET(fd, page_size, &interpath);
-    // TODO: randomize the highest address of the stack
-    // TODO: Setup AuxV,we are interested in a few symbolic values
-    // we need to consider the sizes of the auxv, envp,argv and where the actual command line args strings and environment variables live affect the stack pointer
-    __uint8_t *stackTop = (__uint8_t *)0x00007fffffffffff;
+// TODO: randomize the highest address of the stack
+// TODO: Setup AuxV,we are interested in a few symbolic values
+// we need to consider the sizes of the auxv, envp,argv and where the actual command line args strings and environment variables live affect the stack pointer
+#define PROCESS_ABI_HIGHEST_ADDR 0x00007fffffffffff
+    Usr_bckd_stck stck = {0};
+    stck.sp = PROCESS_ABI_HIGHEST_ADDR;
     struct rlimit lm;
     size_t stack_max_size = getrlimit(RLIMIT_STACK, &lm);
-    __uint8_t *stackEnd = (size_t)0x7fff6c845000 - (stack_max_size & ~(page_size - 1));
+    // start address of the vma of the stack segment
+    __uint8_t *stackEnd = (size_t)PROCESS_ABI_HIGHEST_ADDR - (stack_max_size & ~(page_size - 1));
 
-    Usr_bckd_stck stck = {0};
     stck.argc = argc - 1;
 
     int cpy_i;
@@ -166,26 +168,37 @@ int main(int argc, char **args, char **envp)
     __uint8_t *temp = (__uint8_t *)malloc(sizeof(Usr_bckd_stck) + t_args_size + t_env_size);
     if (temp == NULL)
     {
-      perror("Temporal memory allocation to hold userspace, argc,args and envp failed");
+      perror("Temporal memory allocation to hold userspace,args and envp failed");
       return 1;
     };
+    t_args = args;
+    t_envp = envp;
 
+    Elf64_Addr des = temp + sizeof(Usr_bckd_stck);
     // copy args
-    for (cpy_i = 1; cpy_i < stck.argc; cpy_i++)
+    while (*t_args)
     {
-      memcpy(temp + sizeof(Usr_bckd_stck), args[cpy_i], t_args_size);
+      size_t len = strlen(*t_args) + 1;
+      memcpy(des, *t_args, len);
+      des += len;
+      t_args++;
     }
+    des = temp + sizeof(Usr_bckd_stck) + t_args_size;
     // copy env
-    for (cpy_i = 0; cpy_i < stck.envc; cpy_i++)
+    while (*t_envp)
     {
-      memcpy(temp + sizeof(Usr_bckd_stck) + t_args_size, envp[cpy_i], t_env_size);
+      size_t len = strlen(*t_envp) + 1;
+      memcpy(des, *t_envp, len);
+      des += len;
+      t_envp++;
     }
     Usr_bckd_stck *stckptr = temp;
+    stckptr->sp=stck.sp;
     stckptr->argc = stck.argc;
     stckptr->envc = stck.envc;
     stckptr->argp = stckptr + sizeof(Usr_bckd_stck);
     stckptr->envp = stckptr->argp + t_args_size;
-    
+
     // We are turning this child process into a process that executes <path-to-elf-file> [CLI args to be passed to during process. so MAP_FIXED | MAP_PRIVATE or MAP_PRIVATE
     // Currently our stack have the necessary information we are trying to copy
     // We create a fixed size auxillary vector for the elf program interpretor
