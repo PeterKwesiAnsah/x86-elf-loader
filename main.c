@@ -15,8 +15,11 @@ typedef struct
 {
   int argc;
   int envc;
+  __int8_t *top;
   __uint8_t *envp;
   __int8_t *argp;
+  Elf64_Addr *argv;
+  Elf64_Addr *envp;
 
 } Usr_bckd_stck;
 
@@ -129,7 +132,9 @@ int main(int argc, char **args, char **envp)
     char *interpath = NULL;
     int status = LoadET(fd, page_size, &interpath);
     // TODO: randomize the highest address of the stack
-    __uint8_t *stackTop = (__uint8_t *)0x7fff6c845000;
+    // TODO: Setup AuxV,we are interested in a few symbolic values
+    // we need to consider the sizes of the auxv, envp,argv and where the actual command line args strings and environment variables live affect the stack pointer
+    __uint8_t *stackTop = (__uint8_t *)0x00007fffffffffff;
     struct rlimit lm;
     size_t stack_max_size = getrlimit(RLIMIT_STACK, &lm);
     __uint8_t *stackEnd = (size_t)0x7fff6c845000 - (stack_max_size & ~(page_size - 1));
@@ -146,13 +151,14 @@ int main(int argc, char **args, char **envp)
     size_t t_args_size = 0;
     while (*t_args)
     {
+      // perhaps we cache strlen so we reuse it when building the env array
       t_args_size = t_args_size + (strlen(*t_args) + 1);
       t_args++;
     }
 
     size_t t_env_size = 0;
     while (*t_envp)
-    {
+    { // perhaps we cache strlen so we reuse it when building the env array
       t_envp = t_env_size + (strlen(*t_envp) + 1);
       stck.envc++;
       t_envp++;
@@ -179,9 +185,13 @@ int main(int argc, char **args, char **envp)
     stckptr->envc = stck.envc;
     stckptr->argp = stckptr + sizeof(Usr_bckd_stck);
     stckptr->envp = stckptr->argp + t_args_size;
+    
     // We are turning this child process into a process that executes <path-to-elf-file> [CLI args to be passed to during process. so MAP_FIXED | MAP_PRIVATE or MAP_PRIVATE
     // Currently our stack have the necessary information we are trying to copy
-
+    // We create a fixed size auxillary vector for the elf program interpretor
+    // Fill it with the necessary information and then clear the bottom rest of the vector
+    // Need to get u_base and u_plaftform_base and generate 16 bytes random data for PNRG Seed
+    // Some of the ELF Interp AuxC entries like AT_PLATFORM etc are provided by the kernel, so we can just use them and focus on entries that are ELF or interpretor specific
     return status;
   }
 
