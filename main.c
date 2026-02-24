@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
-
+#include <auxvec.h>
 #define MIN_ARG_COUNT 2
 
 typedef struct
@@ -135,6 +135,10 @@ int main(int argc, char **args, char **envp)
 // TODO: Setup AuxV,we are interested in a few symbolic values
 // we need to consider the sizes of the auxv, envp,argv and where the actual command line args strings and environment variables live affect the stack pointer
 #define PROCESS_ABI_HIGHEST_ADDR 0x00007fffffffffff
+#define RANDOM_BYTES_SIZE 16
+#define AUX_VEC_SIZE (AUX_VECTOR_SIZE * sizeof(auxv_t))
+#define ITEMS_SIZE(count) (sizeof(Elf64_Addr) * count)
+
     Usr_bckd_stck stck = {0};
     stck.sp = PROCESS_ABI_HIGHEST_ADDR;
     struct rlimit lm;
@@ -153,19 +157,22 @@ int main(int argc, char **args, char **envp)
     size_t t_args_size = 0;
     while (*t_args)
     {
-      // perhaps we cache strlen so we reuse it when building the env array
+      // TODO: Linux kernel have minimum length for command line arguments, maybe perhaps we can do that check here
       t_args_size = t_args_size + (strlen(*t_args) + 1);
       t_args++;
     }
 
     size_t t_env_size = 0;
     while (*t_envp)
-    { // perhaps we cache strlen so we reuse it when building the env array
+    {
       t_envp = t_env_size + (strlen(*t_envp) + 1);
       stck.envc++;
       t_envp++;
     }
-    __uint8_t *temp = (__uint8_t *)malloc(sizeof(Usr_bckd_stck) + t_args_size + t_env_size);
+    // we temporarily setup the stack in the heap
+    size_t len = sizeof(Usr_bckd_stck) + t_args_size + t_env_size + RANDOM_BYTES_SIZE + AUX_VEC_SIZE + ITEMS_SIZE(stck.envc + 1) + ITEMS_SIZE(stck.argc + 1) + ITEMS_SIZE(1) + (RANDOM_BYTES_SIZE - 1);
+
+    __uint8_t *temp = (__uint8_t *)malloc(len);
     if (temp == NULL)
     {
       perror("Temporal memory allocation to hold userspace,args and envp failed");
@@ -193,11 +200,25 @@ int main(int argc, char **args, char **envp)
       t_envp++;
     }
     Usr_bckd_stck *stckptr = temp;
-    stckptr->sp=stck.sp;
+    stckptr->sp = stck.sp;
     stckptr->argc = stck.argc;
     stckptr->envc = stck.envc;
     stckptr->argp = stckptr + sizeof(Usr_bckd_stck);
     stckptr->envp = stckptr->argp + t_args_size;
+
+    Elf64_Addr *h_sp = (Elf64_Addr *)((unsigned long)(temp + len) & ~15);
+
+    *h_sp-- = argc;
+
+    //I don't think it's smart to store absolute addresses as we be moving the region of memory into the stack
+    //Let's make it Position independent/relative
+    while (argc-- > 0)
+    {
+      //*h_sp=ag
+    }
+    while (stck.envc-- > 0)
+    {
+    }
 
     // We are turning this child process into a process that executes <path-to-elf-file> [CLI args to be passed to during process. so MAP_FIXED | MAP_PRIVATE or MAP_PRIVATE
     // Currently our stack have the necessary information we are trying to copy
