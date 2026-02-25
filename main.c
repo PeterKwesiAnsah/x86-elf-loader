@@ -131,9 +131,7 @@ int main(int argc, char **args, char **envp)
   {
     char *interpath = NULL;
     int status = LoadET(fd, page_size, &interpath);
-// TODO: randomize the highest address of the stack
-// TODO: Setup AuxV,we are interested in a few symbolic values
-// we need to consider the sizes of the auxv, envp,argv and where the actual command line args strings and environment variables live affect the stack pointer
+
 #define PROCESS_ABI_HIGHEST_ADDR 0x00007fffffffffff
 #define RANDOM_BYTES_SIZE 16
 #define AUX_VEC_SIZE (AUX_VECTOR_SIZE * sizeof(auxv_t))
@@ -157,7 +155,6 @@ int main(int argc, char **args, char **envp)
     size_t t_args_size = 0;
     while (*t_args)
     {
-      // TODO: Linux kernel have minimum length for command line arguments, maybe perhaps we can do that check here
       t_args_size = t_args_size + (strlen(*t_args) + 1);
       t_args++;
     }
@@ -199,6 +196,7 @@ int main(int argc, char **args, char **envp)
       des += len;
       t_envp++;
     }
+
     Usr_bckd_stck *stckptr = temp;
     stckptr->sp = stck.sp;
     stckptr->argc = stck.argc;
@@ -210,25 +208,27 @@ int main(int argc, char **args, char **envp)
 
     *h_sp-- = argc;
 
-    //I don't think it's smart to store absolute addresses as we be moving the region of memory into the stack
-    //Let's make it Position independent/relative
+    // I don't think it's smart to store absolute addresses as we be moving the region of memory into the stack
+    // Let's make it Position independent/relative, store the distance between the positions
     while (argc-- > 0)
     {
-      //*h_sp=ag
+      *h_sp-- = (Elf64_Addr)h_sp - (Elf64_Addr)stckptr->argp;
+      size_t len = strlen(stckptr->argp) + 1;
+      stckptr->argp += len;
     }
+    *h_sp-- = NULL;
     while (stck.envc-- > 0)
     {
+      *h_sp-- = (Elf64_Addr)h_sp - (Elf64_Addr)stckptr->envp;
+      size_t len = strlen(stckptr->envp) + 1;
+      stckptr->envp += len;
     }
-
-    // We are turning this child process into a process that executes <path-to-elf-file> [CLI args to be passed to during process. so MAP_FIXED | MAP_PRIVATE or MAP_PRIVATE
-    // Currently our stack have the necessary information we are trying to copy
+    *h_sp-- = NULL;
     // We create a fixed size auxillary vector for the elf program interpretor
-    // Fill it with the necessary information and then clear the bottom rest of the vector
-    // Need to get u_base and u_plaftform_base and generate 16 bytes random data for PNRG Seed
+    
     // Some of the ELF Interp AuxC entries like AT_PLATFORM etc are provided by the kernel, so we can just use them and focus on entries that are ELF or interpretor specific
     return status;
   }
-
   /* If we forked above, wait for the child so the parent suspends until child exits. */
   if (childpid > 0)
   {
