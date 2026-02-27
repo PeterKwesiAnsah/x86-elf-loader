@@ -19,8 +19,6 @@ typedef struct
   __uint8_t *envp;
   __int8_t *argp;
   Elf64_Addr *argv;
-  Elf64_Addr *envp;
-
 } Usr_bckd_stck;
 
 static int elf_pflags_to_mmap_prot(int p_flags)
@@ -79,7 +77,7 @@ void *LoadET(int fd, size_t page_size, char **interpath)
   pht_i = 1;
   // now we reserve region
   __uint8_t *segs_addr = mmap(NULL, loadsegmmap_len, PROT_NONE, MAP_PRIVATE, -1, 0);
-  if (addr == MAP_FAILED)
+  if (segs_addr == MAP_FAILED)
   {
     perror("mmap failed");
     return NULL;
@@ -92,8 +90,8 @@ void *LoadET(int fd, size_t page_size, char **interpath)
 
     Elf64_Off relap_offset = pht_start[pht_i].p_offset & ~(page_size - 1);
     Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
-    mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
-    if (addr == MAP_FAILED)
+    segs_addr = mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
+    if (segs_addr == MAP_FAILED)
     {
       perror("mmap failed");
       return NULL;
@@ -165,14 +163,14 @@ int main(int argc, char **args, char **envp)
     size_t t_args_size = 0;
     while (*t_args)
     {
-      t_args_size = t_args_size + (strlen(*t_args) + 1);
+      t_args_size += (strlen(*t_args) + 1);
       t_args++;
     }
 
     size_t t_env_size = 0;
     while (*t_envp)
     {
-      t_envp = t_env_size + (strlen(*t_envp) + 1);
+      t_env_size += (strlen(*t_envp) + 1);
       stck.envc++;
       t_envp++;
     }
@@ -245,11 +243,11 @@ int main(int argc, char **args, char **envp)
     NEW_AUX_VEV_ET(AT_PAGESZ, page_size);
     NEW_AUX_VEV_ET(AT_EXECFD, open(elfpath, O_RDONLY));
     NEW_AUX_VEV_ET(AT_PHNUM, main_Ehdr->e_phnum);
-    NEW_AUX_VEV_ET(AT_BASE, (__uint8_t)interp_baddr);
-    NEW_AUX_VEV_ET(AT_ENTRY, (__uint8_t)main_baddr + main_Ehdr->e_entry);
+    NEW_AUX_VEV_ET(AT_BASE, (Elf64_Addr)interp_baddr);
+    NEW_AUX_VEV_ET(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
     NEW_AUX_VEV_ET(AT_PHENT, main_Ehdr->e_phentsize);
     NEW_AUX_VEV_ET(AT_FLAGS, 0);
-    NEW_AUX_VEV_ET(AT_PHDR, (__uint8_t)main_baddr + main_Ehdr->e_phoff);
+    NEW_AUX_VEV_ET(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
     NEW_AUX_VEV_ET(AT_NULL, 0);
 
     // create stack segment
@@ -261,7 +259,7 @@ int main(int argc, char **args, char **envp)
     };
 
     // stack top
-    Elf64_Addr *stck_vma_end = (unsigned long)stck_vma_start + stack_max_size;
+    Elf64_Addr *stck_vma_end = (Elf64_Addr *)((unsigned long)stck_vma_start + stack_max_size);
     stck_vma_end = (unsigned long)stck_vma_end - len;
 
     memcpy(stck_vma_end, temp, len);
@@ -269,7 +267,7 @@ int main(int argc, char **args, char **envp)
 
     stckptr->sp = (unsigned long)(stck_vma_end) & ~15;
 
-    //command-line arguments, environmental variables
+    // command-line arguments, environmental variables
     stckptr->argp = (unsigned long)stck_vma_end + sizeof(Usr_bckd_stck);
     stckptr->envp = stckptr->argp + t_args_size;
 
@@ -278,12 +276,12 @@ int main(int argc, char **args, char **envp)
 
     while (stck.argc-- > 0)
     {
-      *stck_vma_end-- = (unsigned long)*stck_vma_end+stck_vma_end;
+      *stck_vma_end-- = (unsigned long)(*stck_vma_end) + (unsigned long)stck_vma_end;
     }
     stck_vma_end--;
     while (stck.envc-- > 0)
     {
-      *stck_vma_end-- =  (unsigned long)*stck_vma_end+stck_vma_end;
+     *stck_vma_end-- = (unsigned long)(*stck_vma_end) + (unsigned long)stck_vma_end;
     }
     stck_vma_end--;
     return 0;
