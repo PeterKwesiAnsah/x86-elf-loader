@@ -58,9 +58,9 @@ void *LoadET(int fd, size_t page_size, char **interpath)
   int loagseg_i[__UINT8_MAX__] = {0};
   for (; pht_i < ehdr->e_phnum; pht_i++)
   {
-    if (pht_start[pht_i].p_type == PT_INTERP)
+    if (pht_start[pht_i].p_type == PT_INTERP && interpath)
     {
-      //*interpath=str
+      *interpath = strdup(addr + pht_start[pht_i].p_offset);
     } // else if (pht_start[pht_i].p_type == PT_GNU_STACK){
     // check to add PROT_EXEC to stack page
     // }
@@ -136,6 +136,7 @@ int main(int argc, char **args, char **envp)
       return 1;
     Elf64_Ehdr *main_Ehdr = (Elf64_Ehdr *)main_baddr;
     fd = open(interpath, O_RDONLY);
+    // We assume the executable object file is associated with dynamic linking
     void *interp_baddr = LoadET(fd, page_size, NULL);
     if (main_baddr == NULL)
       return 1;
@@ -149,9 +150,9 @@ int main(int argc, char **args, char **envp)
     Usr_bckd_stck stck = {0};
     stck.sp = PROCESS_ABI_HIGHEST_ADDR;
     struct rlimit lm;
-    size_t stack_max_size = getrlimit(RLIMIT_STACK, &lm);
+    size_t stack_max_size = page_size; // getrlimit(RLIMIT_STACK, &lm);
     // start address of the vma of the stack segment
-    __uint8_t *stackEnd = (size_t)PROCESS_ABI_HIGHEST_ADDR - (stack_max_size & ~(page_size - 1));
+    __uint8_t *stck_vma_start = PROCESS_ABI_HIGHEST_ADDR - stack_max_size;
 
     stck.argc = argc - 1;
 
@@ -184,6 +185,7 @@ int main(int argc, char **args, char **envp)
       perror("Temporal memory allocation to hold userspace,args and envp failed");
       return 1;
     };
+
     t_args = args;
     t_envp = envp;
 
@@ -210,16 +212,15 @@ int main(int argc, char **args, char **envp)
     stckptr->sp = stck.sp;
     stckptr->argc = stck.argc;
     stckptr->envc = stck.envc;
-    stckptr->argp = stckptr + sizeof(Usr_bckd_stck);
+    stckptr->argp = (unsigned long)stckptr + sizeof(Usr_bckd_stck);
     stckptr->envp = stckptr->argp + t_args_size;
 
     Elf64_Addr *h_sp = (Elf64_Addr *)((unsigned long)(temp + len) & ~15);
 
-    *h_sp-- = argc;
+    *h_sp-- = stck.argc;
 
-    // I don't think it's smart to store absolute addresses as we be moving the region of memory into the stack
-    // Let's make it Position independent/relative, store the distance between the positions
-    while (argc-- > 0)
+    // store the distance between the positions as we will copy into a new region
+    while (stck.argc-- > 0)
     {
       *h_sp-- = (Elf64_Addr)h_sp - (Elf64_Addr)stckptr->argp;
       size_t len = strlen(stckptr->argp) + 1;
@@ -233,6 +234,11 @@ int main(int argc, char **args, char **envp)
       stckptr->envp += len;
     }
     *h_sp-- = NULL;
+
+    // restore argc,envc values
+    stck.argc = stckptr->argc;
+    stck.envc = stckptr->envc;
+
 // We create a fixed size auxillary vector for the elf program interpretor
 #define NEW_AUX_VEV_ET(a_type, a_un) ({*h_sp--=a_un;*h_sp--=a_type; })
     NEW_AUX_VEV_ET(AT_NOTELF, 0);
@@ -242,24 +248,59 @@ int main(int argc, char **args, char **envp)
     NEW_AUX_VEV_ET(AT_BASE, (__uint8_t)interp_baddr);
     NEW_AUX_VEV_ET(AT_ENTRY, (__uint8_t)main_baddr + main_Ehdr->e_entry);
     NEW_AUX_VEV_ET(AT_PHENT, main_Ehdr->e_phentsize);
+    NEW_AUX_VEV_ET(AT_FLAGS, 0);
     NEW_AUX_VEV_ET(AT_PHDR, (__uint8_t)main_baddr + main_Ehdr->e_phoff);
+    NEW_AUX_VEV_ET(AT_NULL, 0);
 
-    // Some of the ELF Interp AuxC entries like AT_PLATFORM etc are provided by the kernel, so we can just use them and focus on entries that are ELF or interpretor specific
-    return 0;
-
-    /* If we forked above, wait for the child so the parent suspends until child exits. */
-    if (childpid > 0)
+    // create stack segment
+    stck_vma_start = mmap(stck_vma_start, stack_max_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, -1, 0);
+    if (stck_vma_start == NULL)
     {
-      int status = 0;
-      if (waitpid(childpid, &status, 0) == -1)
-      {
-        perror("waitpid failed");
-        return 1;
-      }
-      if (WIFEXITED(status))
-        return WEXITSTATUS(status);
-      return 0;
-    }
+      perror("stack segment mapping failed");
+      return 1;
+    };
 
+    // stack top
+    Elf64_Addr *stck_vma_end = (unsigned long)stck_vma_start + stack_max_size;
+    stck_vma_end = (unsigned long)stck_vma_end - len;
+
+    memcpy(stck_vma_end, temp, len);
+    free(temp);
+
+    stckptr->sp = (unsigned long)(stck_vma_end) & ~15;
+
+    //command-line arguments, environmental variables
+    stckptr->argp = (unsigned long)stck_vma_end + sizeof(Usr_bckd_stck);
+    stckptr->envp = stckptr->argp + t_args_size;
+
+    stck_vma_end = (unsigned long)(stck_vma_end) & ~15;
+    assert(*stck_vma_end-- == stck.argc);
+
+    while (stck.argc-- > 0)
+    {
+      *stck_vma_end-- = (unsigned long)*stck_vma_end+stck_vma_end;
+    }
+    stck_vma_end--;
+    while (stck.envc-- > 0)
+    {
+      *stck_vma_end-- =  (unsigned long)*stck_vma_end+stck_vma_end;
+    }
+    stck_vma_end--;
     return 0;
   }
+  /* If we forked above, wait for the child so the parent suspends until child exits. */
+  if (childpid > 0)
+  {
+    int status = 0;
+    if (waitpid(childpid, &status, 0) == -1)
+    {
+      perror("waitpid failed");
+      return 1;
+    }
+    if (WIFEXITED(status))
+      return WEXITSTATUS(status);
+    return 0;
+  }
+
+  return 0;
+}
