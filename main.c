@@ -51,7 +51,7 @@ void *LoadET(int fd, size_t page_size, char **interpath)
   Elf64_Phdr *pht_start = (Elf64_Phdr *)(addr + ehdr->e_phoff);
   int pht_i = 1;
   Elf64_Addr max_vaddr = 0;
-  Elf64_Addr min_vaddr = 0;
+  Elf64_Addr min_vaddr = ~0UL;
   size_t loadsegmmap_len = 0;
   int loagseg_i[__UINT8_MAX__] = {0};
   for (; pht_i < ehdr->e_phnum; pht_i++)
@@ -67,13 +67,14 @@ void *LoadET(int fd, size_t page_size, char **interpath)
       if (pht_start[pht_i].p_vaddr > max_vaddr)
       {
         max_vaddr = pht_start[pht_i].p_vaddr;
-        loadsegmmap_len = pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz;
-        loagseg_i[pht_i] = pht_i;
       }
       else if (pht_start[pht_i].p_vaddr <= min_vaddr)
         min_vaddr = pht_start[pht_i].p_vaddr;
     }
+    loadsegmmap_len += pht_start[pht_i].p_memsz;
+    loagseg_i[pht_i] = pht_i;
   }
+
   pht_i = 1;
   // now we reserve region
   __uint8_t *segs_addr = mmap(NULL, loadsegmmap_len, PROT_NONE, MAP_PRIVATE, -1, 0);
@@ -108,7 +109,7 @@ void *LoadET(int fd, size_t page_size, char **interpath)
 
   close(fd);
   munmap(addr, fsize);
-  return baddr;
+  return baddr + min_vaddr;
 }
 
 // Usage ./loader <path-to-elf-file> [CLI args to be passed to during process
@@ -281,7 +282,7 @@ int main(int argc, char **args, char **envp)
     stck_vma_end--;
     while (stck.envc-- > 0)
     {
-     *stck_vma_end-- = (unsigned long)(*stck_vma_end) + (unsigned long)stck_vma_end;
+      *stck_vma_end-- = (unsigned long)(*stck_vma_end) + (unsigned long)stck_vma_end;
     }
     stck_vma_end--;
     return 0;
