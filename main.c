@@ -143,98 +143,88 @@ int main(int argc, char **args, char **envp)
 #define AUX_VEC_SIZE (AUX_VECTOR_SIZE * sizeof(auxv_t))
 #define ITEMS_SIZE(count) (sizeof(Elf64_Addr) * count)
 
-  Usr_bckd_stck stck = {0};
-  stck.sp = PROCESS_ABI_HIGHEST_ADDR;
   struct rlimit lm;
+  // limit for size of arguments strings and environmental variables
   getrlimit(RLIMIT_STACK, &lm);
-  size_t stack_max_size = lm.rlim_cur;
-  // start address of the vma of the stack segment
-  __uint8_t *stck_vma_start = (__uint8_t *)((Elf64_Addr)PROCESS_ABI_HIGHEST_ADDR - stack_max_size);
-
-  stck.argc = argc - 1;
-
-  int cpy_i;
+  size_t stack_arg_size = lm.rlim_cur;
 
   // we skip the name of the main executable file
   char **t_args = args + 1;
   char **t_envp = envp;
 
-  size_t t_args_size = 0;
-  while (*t_args)
-  {
-    t_args_size += (strlen(*t_args) + 1);
-    t_args++;
-  }
+  // create stack segment
+  Elf64_Addr *user_space_stack_vm_end = PROCESS_ABI_HIGHEST_ADDR;
+  Elf64_Addr *user_space_stack_vm_start = (Elf64_Addr *)((Elf64_Addr)PROCESS_ABI_HIGHEST_ADDR - stack_arg_size);
 
-  size_t t_env_size = 0;
-  while (*t_envp)
+  // TODO: Update Stack length
+  user_space_stack_vm_start = mmap(user_space_stack_vm_start, stack_arg_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (user_space_stack_vm_start == NULL)
   {
-    t_env_size += (strlen(*t_envp) + 1);
-    stck.envc++;
-    t_envp++;
-  }
-  // we temporarily setup the stack in the heap
-  size_t len = sizeof(Usr_bckd_stck) + t_args_size + t_env_size + RANDOM_BYTES_SIZE + AUX_VEC_SIZE + ITEMS_SIZE(stck.envc + 1) + ITEMS_SIZE(stck.argc + 1) + ITEMS_SIZE(1) + (RANDOM_BYTES_SIZE - 1);
-
-  __uint8_t *temp = (__uint8_t *)malloc(len);
-  if (temp == NULL)
-  {
-    perror("Temporal memory allocation to hold userspace,args and envp failed");
+    perror("stack segment mapping failed");
     return 1;
   };
 
-  t_args = args + 1;
-  t_envp = envp;
+  // 16-byte align
+  user_space_stack_vm_end = (Elf64_Addr *)((unsigned long)user_space_stack_vm_start + stack_arg_size);
+  char *new_args = (char *)user_space_stack_vm_end;
 
-  Elf64_Addr des = (Elf64_Addr)temp + sizeof(Usr_bckd_stck);
+  size_t envc = 0;
+
   // copy args
   while (*t_args)
   {
     size_t len = strlen(*t_args) + 1;
-    memcpy((void *)des, *t_args, len);
-    des += len;
+    // new_args values are used to build the array of argument strings
+    new_args -= len;
+    memcpy(new_args, *t_args, len);
     t_args++;
   }
-  des = (Elf64_Addr)temp + sizeof(Usr_bckd_stck) + t_args_size;
-  // copy env
+  // last arg
+  char *new_user_argp = new_args;
+
+  //  copy env
   while (*t_envp)
   {
     size_t len = strlen(*t_envp) + 1;
-    memcpy((void *)des, *t_envp, len);
-    des += len;
+    // new_args values are used to build the array of environment variables
+    new_args -= len;
+    memcpy((void *)new_args, *t_envp, len);
     t_envp++;
+    envc += 1;
   }
+  // last env
+  char *new_user_envp = new_args;
 
-  Usr_bckd_stck *stckptr = (Usr_bckd_stck *)temp;
-  stckptr->sp = stck.sp;
-  stckptr->argc = stck.argc;
-  stckptr->envc = stck.envc;
-  stckptr->argp = (char *)((unsigned long)stckptr + sizeof(Usr_bckd_stck));
-  stckptr->envp = (unsigned char *)(stckptr->argp + t_args_size);
+  Elf64_Addr *user_aux_vec = (Elf64_Addr *)(((Elf64_Addr)new_args - 15UL) & ~15UL);
+  // alloc stack
+  Elf64_Addr *sp = (Elf64_Addr *)((char *)user_aux_vec - (ITEMS_SIZE((argc + envc + 2)) + AUX_VEC_SIZE));
 
-  Elf64_Addr *h_sp = (Elf64_Addr *)((unsigned long)(temp + len) & ~15);
+  int user_argc = argc - 1;
 
-  *h_sp-- = stck.argc;
+  *sp++ = user_argc;
 
-  // store the distance between the positions as we will copy into a new region
-  while (stck.argc-- > 0)
+  sp = sp + argc;
+  *--sp = 0UL;
+  while (user_argc-- > 0)
   {
-    *h_sp-- = (Elf64_Addr)h_sp - (Elf64_Addr)stckptr->argp;
-    size_t len = strlen(stckptr->argp) + 1;
-    stckptr->argp += len;
+    *--sp = (Elf64_Addr)new_user_argp;
+    size_t len = strlen(new_user_argp) + 1;
+    new_user_argp += len;
   }
-  *h_sp-- = 0UL;
-  while (stck.envc-- > 0)
-  {
-    *h_sp-- = (Elf64_Addr)h_sp - (Elf64_Addr)stckptr->envp;
-    size_t len = strlen(stckptr->envp) + 1;
-    stckptr->envp += len;
-  }
-  *h_sp-- = 0UL;
 
-  // restore argc,envc values
-  stck.argc = stckptr->argc;
-  stck.envc = stckptr->envc;
+  // sp points to args
+  assert(*(sp - 1) == argc - 1);
+  sp = sp + argc + envc + 1;
+  *--sp = 0UL;
+
+  int user_envc = envc;
+  while (user_envc-- > 0)
+  {
+    *--sp = (Elf64_Addr)new_user_envp;
+    size_t len = strlen(new_user_envp) + 1;
+    new_user_envp += len;
+  }
+  sp = sp - (argc + 1);
 
 #undef PROCESS_ABI_HIGHEST_ADDR
 #undef PROCESS_ABI_TEXT_SEG_ADDR
@@ -247,61 +237,31 @@ int main(int argc, char **args, char **envp)
 #endif
 
 // We create a fixed size auxillary vector for the elf program interpretor
-#define NEW_AUX_VEV_ET(a_type, a_un) ({*h_sp--=a_un;*h_sp--=a_type; })
-  NEW_AUX_VEV_ET(AT_NOTELF, 0);
-  NEW_AUX_VEV_ET(AT_PAGESZ, page_size);
-  // NEW_AUX_VEV_ET(AT_EXECFD, open(elfpath, O_RDONLY));
-  NEW_AUX_VEV_ET(AT_PHNUM, main_Ehdr->e_phnum);
-  NEW_AUX_VEV_ET(AT_BASE, (Elf64_Addr)interp_baddr);
-  NEW_AUX_VEV_ET(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
-  NEW_AUX_VEV_ET(AT_PHENT, main_Ehdr->e_phentsize);
-  NEW_AUX_VEV_ET(AT_FLAGS, 0);
-  NEW_AUX_VEV_ET(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
+#define NEW_AUX_VEC_ENT(a_type, a_val) \
+  do                                   \
+  {                                    \
+    *--user_aux_vec = (a_type);        \
+    *--user_aux_vec = (a_val);         \
+  } while (0)
 
-  // create stack segment
-  stck_vma_start = mmap(stck_vma_start, stack_max_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (stck_vma_start == NULL)
-  {
-    perror("stack segment mapping failed");
-    return 1;
-  };
+  NEW_AUX_VEC_ENT(AT_NULL, 0);
+  NEW_AUX_VEC_ENT(AT_NOTELF, 0);
+  NEW_AUX_VEC_ENT(AT_PAGESZ, page_size);
+  // NEW_AUX_VEC_ENT(AT_EXECFD, open(elfpath, O_RDONLY));
+  NEW_AUX_VEC_ENT(AT_PHNUM, main_Ehdr->e_phnum);
+  NEW_AUX_VEC_ENT(AT_BASE, (Elf64_Addr)interp_baddr);
+  NEW_AUX_VEC_ENT(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
+  NEW_AUX_VEC_ENT(AT_PHENT, main_Ehdr->e_phentsize);
+  NEW_AUX_VEC_ENT(AT_FLAGS, 0);
+  NEW_AUX_VEC_ENT(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
 
-  // stack top
-  Elf64_Addr *stck_vma_end = (Elf64_Addr *)((unsigned long)stck_vma_start + stack_max_size);
+  NEW_AUX_VEC_ENT(AT_EXECFN, *(sp - 1));
 
-  // command-line arguments, environmental variables
-  stckptr->argp = (char *)((unsigned long)stck_vma_end + sizeof(Usr_bckd_stck));
-  stckptr->envp = stckptr->argp + t_args_size;
-  // add file name entry
-  NEW_AUX_VEV_ET(AT_EXECFN, (Elf64_Addr)stckptr->argp);
-  NEW_AUX_VEV_ET(AT_NULL, 0);
-
-  // stck_vma_end sizeof(Usr_bckd_stck) + t_args_size
-  // fix should rather be the top of the stack
-  stck_vma_end = (Elf64_Addr *)((unsigned long)stck_vma_end - len);
-
-  memcpy(stck_vma_end, temp, len);
-
-  free(temp);
-
-  stckptr->sp = (Elf64_Addr *)((unsigned long)(stck_vma_end) & ~15UL);
-
-  stck_vma_end = (Elf64_Addr *)((unsigned long)(stck_vma_end) & ~15UL);
-  assert(*stck_vma_end-- == stck.argc);
-
-  while (stck.argc-- > 0)
-    *stck_vma_end-- = (unsigned long)(*stck_vma_end) + (unsigned long)stck_vma_end;
-
-  stck_vma_end--;
-  while (stck.envc-- > 0)
-    *stck_vma_end-- = (unsigned long)(*stck_vma_end) + (unsigned long)stck_vma_end;
-
-  stck_vma_end--;
-
+  assert((Elf64_Addr)sp % 16 == 0);
   void (*entry_point)(void) = (void (*)(void))((unsigned long)
                                                    interp_baddr +
                                                ((Elf64_Ehdr *)interp_baddr)->e_entry);
 
-  __asm__ __volatile__("mov %0, %%rsp" : : "r"(stckptr->sp));
+  __asm__ __volatile__("mov %0, %%rsp" : : "r"(sp));
   entry_point();
 }
