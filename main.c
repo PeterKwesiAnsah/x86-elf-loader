@@ -51,34 +51,39 @@ void *LoadET(int fd, size_t page_size, char **interpath)
 
   Elf64_Ehdr *ehdr = (Elf64_Ehdr *)addr;
   Elf64_Phdr *pht_start = (Elf64_Phdr *)(addr + ehdr->e_phoff);
-  int pht_i = 1;
+
   Elf64_Addr max_vaddr = 0;
   Elf64_Addr min_vaddr = ~0UL;
   size_t loadsegmmap_len = 0;
   Elf64_Addr pbrk = 0;
-  int loagseg_i[__UINT8_MAX__] = {0};
+
+  int pht_i = 0;
   for (; pht_i < ehdr->e_phnum; pht_i++)
   {
     if (pht_start[pht_i].p_type == PT_INTERP && interpath)
     {
       *interpath = strdup(addr + pht_start[pht_i].p_offset);
-    } // else if (pht_start[pht_i].p_type == PT_GNU_STACK){
-    // check to add PROT_EXEC to stack page
-    // }
+    }
     else if (pht_start[pht_i].p_type == PT_LOAD)
     {
-      loagseg_i[pht_i] = pht_i;
       loadsegmmap_len += ((pht_start[pht_i].p_memsz + (page_size - 1)) & ~(page_size - 1));
       if (pht_start[pht_i].p_vaddr > max_vaddr)
       {
         max_vaddr = pht_start[pht_i].p_vaddr;
       }
-      else if (pht_start[pht_i].p_vaddr <= min_vaddr)
+
+      if (pht_start[pht_i].p_vaddr < min_vaddr)
+      {
         min_vaddr = pht_start[pht_i].p_vaddr;
+      }
     }
+    // else if (pht_start[pht_i].p_type == PT_GNU_STACK){
+    // check to add PROT_EXEC to stack page
+    // }
   }
 
-  pht_i = 1;
+  assert(loadsegmmap_len % page_size == 0);
+
   // now we reserve region
   __uint8_t *segs_addr = mmap(NULL, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (segs_addr == MAP_FAILED)
@@ -86,31 +91,37 @@ void *LoadET(int fd, size_t page_size, char **interpath)
     perror("mmap failed reserving memory region");
     return NULL;
   }
-  __uint8_t *baddr = segs_addr - (min_vaddr & ~(page_size - 1));
-  for (; pht_i < __UINT8_MAX__; pht_i++)
-  {
-    if (loagseg_i[pht_i] == 0)
-      continue;
 
-    Elf64_Off relap_offset = pht_start[pht_i].p_offset & ~(page_size - 1);
-    Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
-    segs_addr = mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
-    if (segs_addr == MAP_FAILED)
+  assert(min_vaddr == 0UL);
+
+  __uint8_t *baddr = segs_addr - (min_vaddr & ~(page_size - 1));
+  pht_i = 0;
+  for (; pht_i < ehdr->e_phnum; pht_i++)
+  {
+    if (pht_start[pht_i].p_type == PT_LOAD)
     {
-      perror("mmap failed mapping individual load segments");
-      return NULL;
-    }
-    if (pht_start[pht_i].p_memsz > pht_start[pht_i].p_filesz)
-    {
-      size_t bss_size = pht_start[pht_i].p_memsz - pht_start[pht_i].p_filesz;
-      memset(baddr + pht_start[pht_i].p_vaddr + pht_start[pht_i].p_filesz, '\0', bss_size);
-      pbrk = (Elf64_Addr)baddr + pht_start[pht_i].p_vaddr + pht_start[pht_i].p_filesz + bss_size;
+      Elf64_Off relap_offset = pht_start[pht_i].p_offset & ~(page_size - 1);
+      Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
+      segs_addr = mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
+      if (segs_addr == MAP_FAILED)
+      {
+        perror("mmap failed mapping individual load segments");
+        return NULL;
+      }
+      // heap segment, last segment with the tailed-backed .bss
+      // brk is set right on top of .bss
+      if (pht_start[pht_i].p_memsz > pht_start[pht_i].p_filesz)
+      {
+        size_t bss_size = pht_start[pht_i].p_memsz - pht_start[pht_i].p_filesz;
+        memset(baddr + pht_start[pht_i].p_vaddr + pht_start[pht_i].p_filesz, '\0', bss_size);
+        pbrk = (Elf64_Addr)baddr + pht_start[pht_i].p_vaddr + pht_start[pht_i].p_filesz + bss_size;
+      }
     }
   }
 
   close(fd);
   munmap(addr, fsize);
-  return baddr + min_vaddr;
+  return baddr;
 }
 
 // Usage ./loader <path-to-elf-file> [CLI args to be passed to during process
@@ -260,7 +271,7 @@ int main(int argc, char **args, char **envp)
   assert((Elf64_Addr)sp % 16 == 0);
   void (*entry_point)(void) = (void (*)(void))((unsigned long)
                                                    interp_baddr +
-                                               ((Elf64_Ehdr *)interp_baddr)->e_entry);
+                                               (((Elf64_Ehdr *)interp_baddr)->e_entry));
 
   __asm__ __volatile__("mov %0, %%rsp" : : "r"(sp));
   entry_point();
