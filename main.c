@@ -40,7 +40,7 @@ static int elf_pflags_to_mmap_prot(int p_flags)
   return prot;
 }
 // function used to load executable files, shared objects like program interp
-void *LoadET(void *addr, int fd, size_t page_size, char **interpath)
+void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
 {
 
   off_t fsize = lseek(fd, 0, SEEK_END);
@@ -87,7 +87,7 @@ void *LoadET(void *addr, int fd, size_t page_size, char **interpath)
   assert(loadsegmmap_len % page_size == 0);
 
   // now we reserve region
-  __uint8_t *segs_addr = mmap(addr, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  __uint8_t *segs_addr = mmap(s_addr, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (segs_addr == MAP_FAILED)
   {
     perror("mmap failed reserving memory region");
