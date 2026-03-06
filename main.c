@@ -11,7 +11,10 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include "auxvec.h"
+
 #define MIN_ARG_COUNT 2
+#define PROCESS_ABI_HIGHEST_ADDR ((Elf64_Addr *)0x00007fffffffffff)
+#define PROCESS_ABI_TEXT_SEG_ADDR 0x400000
 
 typedef struct
 {
@@ -37,7 +40,7 @@ static int elf_pflags_to_mmap_prot(int p_flags)
   return prot;
 }
 // function used to load executable files, shared objects like program interp
-void *LoadET(int fd, size_t page_size, char **interpath)
+void *LoadET(void *addr, int fd, size_t page_size, char **interpath)
 {
 
   off_t fsize = lseek(fd, 0, SEEK_END);
@@ -57,8 +60,7 @@ void *LoadET(int fd, size_t page_size, char **interpath)
   size_t loadsegmmap_len = 0;
   Elf64_Addr pbrk = 0;
 
-  int pht_i = 0;
-  for (; pht_i < ehdr->e_phnum; pht_i++)
+  for (int pht_i = 0; pht_i < ehdr->e_phnum; pht_i++)
   {
     if (pht_start[pht_i].p_type == PT_INTERP && interpath)
     {
@@ -85,7 +87,7 @@ void *LoadET(int fd, size_t page_size, char **interpath)
   assert(loadsegmmap_len % page_size == 0);
 
   // now we reserve region
-  __uint8_t *segs_addr = mmap(NULL, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  __uint8_t *segs_addr = mmap(addr, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (segs_addr == MAP_FAILED)
   {
     perror("mmap failed reserving memory region");
@@ -95,8 +97,8 @@ void *LoadET(int fd, size_t page_size, char **interpath)
   assert(min_vaddr == 0UL);
 
   __uint8_t *baddr = segs_addr - (min_vaddr & ~(page_size - 1));
-  pht_i = 0;
-  for (; pht_i < ehdr->e_phnum; pht_i++)
+
+  for (int pht_i = 0; pht_i < ehdr->e_phnum; pht_i++)
   {
     if (pht_start[pht_i].p_type == PT_LOAD)
     {
@@ -138,18 +140,16 @@ int main(int argc, char **args, char **envp)
 
   char *interpath = NULL;
   // returns the program memory image starting address
-  void *main_baddr = LoadET(open(elfpath, O_RDONLY), page_size, &interpath);
+  void *main_baddr = LoadET((void *)PROCESS_ABI_TEXT_SEG_ADDR, open(elfpath, O_RDONLY), page_size, &interpath);
   if (main_baddr == NULL)
     return 1;
   Elf64_Ehdr *main_Ehdr = (Elf64_Ehdr *)main_baddr;
 
   // We assume the executable object file is associated with dynamic linking
-  void *interp_baddr = LoadET(open(interpath, O_RDONLY), page_size, NULL);
+  void *interp_baddr = LoadET(NULL, open(interpath, O_RDONLY), page_size, NULL);
   if (interp_baddr == NULL)
     return 1;
 
-#define PROCESS_ABI_HIGHEST_ADDR ((Elf64_Addr *)0x00007fffffffffff)
-#define PROCESS_ABI_TEXT_SEG_ADDR 0x400000
 #define RANDOM_BYTES_SIZE 16
 #define AUX_VEC_SIZE (AUX_VECTOR_SIZE * sizeof(auxv_t))
 #define ITEMS_SIZE(count) (sizeof(Elf64_Addr) * count)
