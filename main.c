@@ -247,26 +247,26 @@ int main(int argc, char **args, char **envp)
 #undef AUX_VECTOR_SIZE
 #endif
 
+  user_aux_vec = sp + argc + envc + 2;
 // We create a fixed size auxillary vector for the elf program interpretor
 #define NEW_AUX_VEC_ENT(a_type, a_val) \
   do                                   \
   {                                    \
-    *--user_aux_vec = (a_type);        \
-    *--user_aux_vec = (a_val);         \
+    *user_aux_vec++ = (a_val);         \
+    *user_aux_vec++ = (a_type);        \
   } while (0)
 
-  NEW_AUX_VEC_ENT(AT_NULL, 0);
+  NEW_AUX_VEC_ENT(AT_EXECFN, *(sp + 1));
   NEW_AUX_VEC_ENT(AT_NOTELF, 0);
   NEW_AUX_VEC_ENT(AT_PAGESZ, page_size);
-  // NEW_AUX_VEC_ENT(AT_EXECFD, open(elfpath, O_RDONLY));
+  NEW_AUX_VEC_ENT(AT_EXECFD, open(elfpath, O_RDONLY));
   NEW_AUX_VEC_ENT(AT_PHNUM, main_Ehdr->e_phnum);
   NEW_AUX_VEC_ENT(AT_BASE, (Elf64_Addr)interp_baddr);
   NEW_AUX_VEC_ENT(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
   NEW_AUX_VEC_ENT(AT_PHENT, main_Ehdr->e_phentsize);
   NEW_AUX_VEC_ENT(AT_FLAGS, 0);
   NEW_AUX_VEC_ENT(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
-
-  NEW_AUX_VEC_ENT(AT_EXECFN, *(sp - 1));
+  NEW_AUX_VEC_ENT(AT_NULL, 0);
 
   assert((Elf64_Addr)sp % 16 == 0);
   void (*entry_point)(void) = (void (*)(void))((unsigned long)
