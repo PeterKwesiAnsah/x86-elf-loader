@@ -14,7 +14,7 @@
 
 #define MIN_ARG_COUNT 2
 #define PROCESS_ABI_HIGHEST_ADDR ((Elf64_Addr *)0x00007fffffffffff)
-#define PROCESS_ABI_TEXT_SEG_ADDR 0x400000
+#define PROCESS_ABI_TEXT_SEG_ADDR 0x0000000000400000
 
 typedef struct
 {
@@ -68,10 +68,9 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     }
     else if (pht_start[pht_i].p_type == PT_LOAD)
     {
-      loadsegmmap_len += ((pht_start[pht_i].p_memsz + (page_size - 1)) & ~(page_size - 1));
       if (pht_start[pht_i].p_vaddr > max_vaddr)
       {
-        max_vaddr = pht_start[pht_i].p_vaddr;
+        max_vaddr = ((pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz) + page_size - 1) & ~(page_size - 1);
       }
 
       if (pht_start[pht_i].p_vaddr < min_vaddr)
@@ -83,7 +82,7 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     // check to add PROT_EXEC to stack page
     // }
   }
-
+  loadsegmmap_len = max_vaddr - (min_vaddr & ~(page_size - 1));
   assert(loadsegmmap_len % page_size == 0);
 
   // now we reserve region
@@ -104,7 +103,11 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     {
       Elf64_Off relap_offset = pht_start[pht_i].p_offset & ~(page_size - 1);
       Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
-      segs_addr = mmap(baddr + relap_vadress, (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
+
+      size_t map_size = (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_memsz;
+      map_size = (map_size + page_size - 1) & ~(page_size - 1);
+
+      segs_addr = mmap(baddr + relap_vadress, map_size, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
       if (segs_addr == MAP_FAILED)
       {
         perror("mmap failed mapping individual load segments");
@@ -257,7 +260,6 @@ int main(int argc, char **args, char **envp)
   } while (0)
 
   NEW_AUX_VEC_ENT(AT_EXECFN, *(sp + 1));
-  NEW_AUX_VEC_ENT(AT_NOTELF, 0);
   NEW_AUX_VEC_ENT(AT_PAGESZ, page_size);
   NEW_AUX_VEC_ENT(AT_EXECFD, open(elfpath, O_RDONLY));
   NEW_AUX_VEC_ENT(AT_PHNUM, main_Ehdr->e_phnum);
@@ -266,13 +268,30 @@ int main(int argc, char **args, char **envp)
   NEW_AUX_VEC_ENT(AT_PHENT, main_Ehdr->e_phentsize);
   NEW_AUX_VEC_ENT(AT_FLAGS, 0);
   NEW_AUX_VEC_ENT(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
+
+  unsigned char random_bytes[16];
+  int urandom = open("/dev/urandom", O_RDONLY);
+  read(urandom, random_bytes, 16);
+  close(urandom);
+  // random bytes points to the old stack of the loader process
+  // since we are not trying to replace that stack it should be valid memory address
+  // TODO: set it up in the new stack
+  NEW_AUX_VEC_ENT(AT_RANDOM, (Elf64_Addr)random_bytes);
   NEW_AUX_VEC_ENT(AT_NULL, 0);
 
   assert((Elf64_Addr)sp % 16 == 0);
+  assert(*sp == argc - 1);
   void (*entry_point)(void) = (void (*)(void))((unsigned long)
                                                    interp_baddr +
                                                (((Elf64_Ehdr *)interp_baddr)->e_entry));
 
-  __asm__ __volatile__("mov %0, %%rsp" : : "r"(sp));
-  entry_point();
+  assert(entry_point != (void *)0);
+  assert(interp_baddr != (void *)0);
+
+  __asm__ __volatile__(
+      "mov %0, %%rsp\n"
+      "xor %%rbp, %%rbp\n"
+      "jmp *%1"
+      :
+      : "r"(sp), "r"(entry_point));
 }
