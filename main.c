@@ -170,7 +170,6 @@ int main(int argc, char **args, char **envp)
   Elf64_Addr *user_space_stack_vm_end = PROCESS_ABI_HIGHEST_ADDR;
   Elf64_Addr *user_space_stack_vm_start = (Elf64_Addr *)((Elf64_Addr)PROCESS_ABI_HIGHEST_ADDR - stack_arg_size);
 
-  // TODO: Update Stack length
   user_space_stack_vm_start = mmap(user_space_stack_vm_start, stack_arg_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (user_space_stack_vm_start == NULL)
   {
@@ -178,11 +177,12 @@ int main(int argc, char **args, char **envp)
     return 1;
   };
 
-  // 16-byte align
   user_space_stack_vm_end = (Elf64_Addr *)((unsigned long)user_space_stack_vm_start + stack_arg_size);
   char *new_args = (char *)user_space_stack_vm_end;
 
   size_t envc = 0;
+
+  char *fn = NULL;
 
   // copy args
   while (*t_args)
@@ -190,6 +190,10 @@ int main(int argc, char **args, char **envp)
     size_t len = strlen(*t_args) + 1;
     // new_args values are used to build the array of argument strings
     new_args -= len;
+    if (!fn)
+    {
+      fn = new_args;
+    }
     memcpy(new_args, *t_args, len);
     t_args++;
   }
@@ -210,25 +214,45 @@ int main(int argc, char **args, char **envp)
   char *new_user_envp = new_args;
 
   Elf64_Addr *user_aux_vec = (Elf64_Addr *)(((Elf64_Addr)new_args - 15UL) & ~15UL);
-  // alloc stack
-  Elf64_Addr *sp = (Elf64_Addr *)((char *)user_aux_vec - (ITEMS_SIZE((argc + envc + 2)) + AUX_VEC_SIZE));
-
-  int user_argc = argc - 1;
-
-  *sp++ = user_argc;
-
-  sp = sp + argc;
-  *--sp = 0UL;
-  while (user_argc-- > 0)
+  const size_t stck_len = argc + envc + 2 + AUX_VECTOR_SIZE;
+  if (stck_len % 2 != 0)
   {
-    *--sp = (Elf64_Addr)new_user_argp;
-    size_t len = strlen(new_user_argp) + 1;
-    new_user_argp += len;
+    // alignment padding
+    *--user_aux_vec = 0UL;
   }
 
-  // sp points to args
-  assert(*(sp - 1) == argc - 1);
-  sp = sp + argc + envc + 1;
+  // We create a fixed size auxillary vector for the elf program interpretor
+#define NEW_AUX_VEC_ENT(a_type, a_val) \
+  do                                   \
+  {                                    \
+    *--user_aux_vec = (a_type);        \
+    *--user_aux_vec = (a_val);         \
+  } while (0)
+
+  NEW_AUX_VEC_ENT(AT_NULL, 0);
+  NEW_AUX_VEC_ENT(AT_EXECFN, (Elf64_Addr)fn);
+  NEW_AUX_VEC_ENT(AT_PAGESZ, page_size);
+  NEW_AUX_VEC_ENT(AT_EXECFD, open(elfpath, O_RDONLY));
+  NEW_AUX_VEC_ENT(AT_PHNUM, main_Ehdr->e_phnum);
+  NEW_AUX_VEC_ENT(AT_BASE, (Elf64_Addr)interp_baddr);
+  NEW_AUX_VEC_ENT(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
+  NEW_AUX_VEC_ENT(AT_PHENT, main_Ehdr->e_phentsize);
+  NEW_AUX_VEC_ENT(AT_FLAGS, 0);
+  NEW_AUX_VEC_ENT(AT_NOTELF, 0);
+
+  NEW_AUX_VEC_ENT(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
+
+  unsigned char random_bytes[16];
+  int urandom = open("/dev/urandom", O_RDONLY);
+  read(urandom, random_bytes, 16);
+  close(urandom);
+  // random bytes points to the old stack of the loader process
+  // since we are not trying to replace that stack it should be valid memory address
+  NEW_AUX_VEC_ENT(AT_RANDOM, (Elf64_Addr)random_bytes);
+
+  Elf64_Addr *sp = user_aux_vec;
+  int user_argc = argc - 1;
+
   *--sp = 0UL;
 
   int user_envc = envc;
@@ -238,46 +262,22 @@ int main(int argc, char **args, char **envp)
     size_t len = strlen(new_user_envp) + 1;
     new_user_envp += len;
   }
-  sp = sp - (argc + 1);
+
+  *--sp = 0UL;
+  while (user_argc-- > 0)
+  {
+    *--sp = (Elf64_Addr)new_user_argp;
+    size_t len = strlen(new_user_argp) + 1;
+    new_user_argp += len;
+  }
+
+  *--sp = argc - 1;
 
 #undef PROCESS_ABI_HIGHEST_ADDR
 #undef PROCESS_ABI_TEXT_SEG_ADDR
 #undef RANDOM_BYTES_SIZE
 #undef AUX_VEC_SIZE
 #undef ITEMS_SIZE
-
-#ifdef AUX_VECTOR_SIZE
-#undef AUX_VECTOR_SIZE
-#endif
-
-  user_aux_vec = sp + argc + envc + 2;
-// We create a fixed size auxillary vector for the elf program interpretor
-#define NEW_AUX_VEC_ENT(a_type, a_val) \
-  do                                   \
-  {                                    \
-    *user_aux_vec++ = (a_val);         \
-    *user_aux_vec++ = (a_type);        \
-  } while (0)
-
-  NEW_AUX_VEC_ENT(AT_EXECFN, *(sp + 1));
-  NEW_AUX_VEC_ENT(AT_PAGESZ, page_size);
-  NEW_AUX_VEC_ENT(AT_EXECFD, open(elfpath, O_RDONLY));
-  NEW_AUX_VEC_ENT(AT_PHNUM, main_Ehdr->e_phnum);
-  NEW_AUX_VEC_ENT(AT_BASE, (Elf64_Addr)interp_baddr);
-  NEW_AUX_VEC_ENT(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
-  NEW_AUX_VEC_ENT(AT_PHENT, main_Ehdr->e_phentsize);
-  NEW_AUX_VEC_ENT(AT_FLAGS, 0);
-  NEW_AUX_VEC_ENT(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
-
-  unsigned char random_bytes[16];
-  int urandom = open("/dev/urandom", O_RDONLY);
-  read(urandom, random_bytes, 16);
-  close(urandom);
-  // random bytes points to the old stack of the loader process
-  // since we are not trying to replace that stack it should be valid memory address
-  // TODO: set it up in the new stack
-  NEW_AUX_VEC_ENT(AT_RANDOM, (Elf64_Addr)random_bytes);
-  NEW_AUX_VEC_ENT(AT_NULL, 0);
 
   assert((Elf64_Addr)sp % 16 == 0);
   assert(*sp == argc - 1);
