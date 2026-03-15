@@ -26,6 +26,33 @@ typedef struct
   Elf64_Addr *argv;
 } Usr_bckd_stck;
 
+typedef struct
+{
+  Elf64_Addr sysinfo_ehdr;
+  Elf64_Addr random;
+} loader_auxv_t;
+
+loader_auxv_t get_loader_auxv(void)
+{
+  loader_auxv_t result = {0};
+  FILE *f = fopen("/proc/self/auxv", "rb");
+  if (!f)
+    return result;
+
+  auxv_t auxv;
+  while (fread(&auxv, sizeof(auxv), 1, f) == 1)
+  {
+    if (auxv.a_type == AT_SYSINFO_EHDR)
+      result.sysinfo_ehdr = auxv.a_un.a_val;
+    else if (auxv.a_type == AT_RANDOM)
+      result.random = auxv.a_un.a_val;
+    else if (auxv.a_type == AT_NULL)
+      break;
+  }
+  fclose(f);
+  return result;
+}
+
 static int elf_pflags_to_mmap_prot(int p_flags)
 {
   int prot = 0;
@@ -42,7 +69,6 @@ static int elf_pflags_to_mmap_prot(int p_flags)
 // function used to load executable files, shared objects like program interp
 void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
 {
-
   off_t fsize = lseek(fd, 0, SEEK_END);
   __uint8_t *addr = mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 
@@ -70,7 +96,8 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     {
       if (pht_start[pht_i].p_vaddr > max_vaddr)
       {
-        max_vaddr = ((pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz) + page_size - 1) & ~(page_size - 1);
+        max_vaddr = pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz;
+        // max_vaddr = ((pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz) + page_size - 1) & ~(page_size - 1);
       }
 
       if (pht_start[pht_i].p_vaddr < min_vaddr)
@@ -82,8 +109,9 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     // check to add PROT_EXEC to stack page
     // }
   }
-  loadsegmmap_len = max_vaddr - (min_vaddr & ~(page_size - 1));
-  assert(loadsegmmap_len % page_size == 0);
+
+  // loadsegmmap_len = max_vaddr - (min_vaddr & ~(page_size - 1));
+  loadsegmmap_len = max_vaddr - (min_vaddr & ~15);
 
   // now we reserve region
   __uint8_t *segs_addr = mmap(s_addr, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -92,10 +120,10 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     perror("mmap failed reserving memory region");
     return NULL;
   }
-
-  assert(min_vaddr == 0UL);
-
+  // load bias for ET_EXEC is 0
   __uint8_t *baddr = segs_addr - (min_vaddr & ~(page_size - 1));
+  // usually for PIE, min_vaddr is 0 so the load bias is the same as the address of the loaded segement
+  // TODO; We can handle non PIE, as the loader process since is PIE, the linux kernel chooses  0x555555554aaa + ASLR offset for the text segment
 
   for (int pht_i = 0; pht_i < ehdr->e_phnum; pht_i++)
   {
@@ -106,13 +134,24 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
 
       size_t map_size = (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_memsz;
       map_size = (map_size + page_size - 1) & ~(page_size - 1);
-
       segs_addr = mmap(baddr + relap_vadress, map_size, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags), MAP_PRIVATE | MAP_FIXED, fd, relap_offset);
       if (segs_addr == MAP_FAILED)
       {
         perror("mmap failed mapping individual load segments");
         return NULL;
       }
+
+      // temporarily add PROT_WRITE to zero BSS, then restore
+      // if (pht_start[pht_i].p_memsz > pht_start[pht_i].p_filesz)
+      // {
+      //   size_t bss_size = pht_start[pht_i].p_memsz - pht_start[pht_i].p_filesz;
+      //   void *bss_start = baddr + pht_start[pht_i].p_vaddr + pht_start[pht_i].p_filesz;
+
+      //   mprotect(bss_start, bss_size, PROT_READ | PROT_WRITE);
+      //   memset(bss_start, 0, bss_size);
+      //   mprotect(bss_start, bss_size, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags));
+      // }
+
       // heap segment, last segment with the tailed-backed .bss
       // brk is set right on top of .bss
       if (pht_start[pht_i].p_memsz > pht_start[pht_i].p_filesz)
@@ -127,6 +166,52 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
   close(fd);
   munmap(addr, fsize);
   return baddr;
+
+  // Elf64_Shdr *sht_start = (Elf64_Shdr *)(addr + ehdr->e_shoff);
+  // /**
+  //  *
+  //  * "The AMD64 LP64 ABI architecture uses only Elf64_Rela relocation en-
+  //     tries with explicit addends. The r_addend member serves as the relocation
+  //     addend."
+  //  */
+  // for (int sht_i = 1; sht_i < ehdr->e_shnum; sht_i++)
+  // {
+  //   if (sht_start[sht_i].sh_type == SHT_RELA)
+  //   {
+  //     int rela_sym_sht_i = sht_start[sht_i].sh_link;
+  //     int rela_num = sht_start[sht_i].sh_size / sht_start[sht_i].sh_entsize;
+  //     Elf64_Rela *relat_start = (Elf64_Rela *)(addr + sht_start[sht_i].sh_offset);
+  //     for (int relat_i = 0; relat_i < rela_num; relat_i++)
+  //     {
+  //       Elf64_Rela *rela = &relat_start[relat_i];
+  //       Elf64_Addr *patch = (Elf64_Addr *)(baddr + rela->r_offset);
+  //       switch (ELF64_R_TYPE(rela->r_info))
+  //       {
+  //       case R_X86_64_RELATIVE:
+  //         *patch = (Elf64_Addr)(baddr + rela->r_addend);
+  //         break;
+  //       case R_X86_64_IRELATIVE:
+  //       {
+  //         Elf64_Addr (*resolver)(void) = (void *)(baddr + rela->r_addend);
+  //         *patch = resolver();
+  //       }
+  //       break;
+  //       case R_X86_64_JUMP_SLOT:
+  //       {
+  //         Elf64_Sym *symt_start = (Elf64_Sym *)(addr + sht_start[rela_sym_sht_i].sh_offset);
+  //         Elf64_Addr value = symt_start[ELF64_R_SYM(rela->r_info)].st_value;
+  //         *patch = (Elf64_Addr)baddr + value;
+  //       }
+  //       break;
+  //       case R_X86_64_NONE:
+  //         break;
+  //       default:
+  //         fprintf(stderr, "Unsupported relocation: %lu\n", ELF64_R_TYPE(rela->r_info));
+  //         return NULL;
+  //       }
+  //     }
+  //   }
+  // }
 }
 
 // Usage ./loader <path-to-elf-file> [CLI args to be passed to during process
@@ -171,7 +256,7 @@ int main(int argc, char **args, char **envp)
   Elf64_Addr *user_space_stack_vm_start = (Elf64_Addr *)((Elf64_Addr)PROCESS_ABI_HIGHEST_ADDR - stack_arg_size);
 
   user_space_stack_vm_start = mmap(user_space_stack_vm_start, stack_arg_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (user_space_stack_vm_start == NULL)
+  if (user_space_stack_vm_start == MAP_FAILED)
   {
     perror("stack segment mapping failed");
     return 1;
@@ -214,6 +299,7 @@ int main(int argc, char **args, char **envp)
   char *new_user_envp = new_args;
 
   Elf64_Addr *user_aux_vec = (Elf64_Addr *)(((Elf64_Addr)new_args - 15UL) & ~15UL);
+  // const size_t stck_len = argc + envc + 2;
   const size_t stck_len = argc + envc + 2 + AUX_VECTOR_SIZE;
   if (stck_len % 2 != 0)
   {
@@ -238,17 +324,13 @@ int main(int argc, char **args, char **envp)
   NEW_AUX_VEC_ENT(AT_ENTRY, (Elf64_Addr)main_baddr + main_Ehdr->e_entry);
   NEW_AUX_VEC_ENT(AT_PHENT, main_Ehdr->e_phentsize);
   NEW_AUX_VEC_ENT(AT_FLAGS, 0);
-  NEW_AUX_VEC_ENT(AT_NOTELF, 0);
 
   NEW_AUX_VEC_ENT(AT_PHDR, (Elf64_Addr)main_baddr + main_Ehdr->e_phoff);
 
-  unsigned char random_bytes[16];
-  int urandom = open("/dev/urandom", O_RDONLY);
-  read(urandom, random_bytes, 16);
-  close(urandom);
-  // random bytes points to the old stack of the loader process
-  // since we are not trying to replace that stack it should be valid memory address
-  NEW_AUX_VEC_ENT(AT_RANDOM, (Elf64_Addr)random_bytes);
+  loader_auxv_t l_auxv_t = get_loader_auxv();
+
+  NEW_AUX_VEC_ENT(AT_RANDOM, (Elf64_Addr)l_auxv_t.random);
+  NEW_AUX_VEC_ENT(AT_SYSINFO_EHDR, l_auxv_t.sysinfo_ehdr);
 
   Elf64_Addr *sp = user_aux_vec;
   int user_argc = argc - 1;
@@ -279,19 +361,39 @@ int main(int argc, char **args, char **envp)
 #undef AUX_VEC_SIZE
 #undef ITEMS_SIZE
 
-  assert((Elf64_Addr)sp % 16 == 0);
-  assert(*sp == argc - 1);
   void (*entry_point)(void) = (void (*)(void))((unsigned long)
                                                    interp_baddr +
                                                (((Elf64_Ehdr *)interp_baddr)->e_entry));
 
-  assert(entry_point != (void *)0);
-  assert(interp_baddr != (void *)0);
+  fprintf(stderr, "interp_baddr = %p\n", interp_baddr);
+  fprintf(stderr, "interp entry = %p\n", entry_point);
+  fprintf(stderr, "main_baddr   = %p\n", main_baddr);
+  fprintf(stderr, "sp           = %p\n", sp);
+  fprintf(stderr, "*sp (argc)   = %lu\n", *sp);
+  fprintf(stderr, "fn = %s\n", fn);
+
+  register unsigned long sp_val asm("rax") = (unsigned long)sp;
+  register unsigned long entry_val asm("r15") = (unsigned long)entry_point;
 
   __asm__ __volatile__(
-      "mov %0, %%rsp\n"
+      "mov %%rax, %%rsp\n" // set stack pointer
+      "push %%r15\n"       // push entry point onto stack
+      "xor %%rax, %%rax\n" // zero all registers
+      "xor %%rbx, %%rbx\n"
+      "xor %%rcx, %%rcx\n"
+      "xor %%rdx, %%rdx\n"
+      "xor %%rdi, %%rdi\n"
+      "xor %%rsi, %%rsi\n"
       "xor %%rbp, %%rbp\n"
-      "jmp *%1"
+      "xor %%r9,  %%r9\n"
+      "xor %%r10, %%r10\n"
+      "xor %%r11, %%r11\n"
+      "xor %%r12, %%r12\n"
+      "xor %%r13, %%r13\n"
+      "xor %%r14, %%r14\n"
+      "xor %%r15, %%r15\n"
+      "ret\n"
       :
-      : "r"(sp), "r"(entry_point));
+      : "r"(sp_val), "r"(entry_val) // GCC sees the register variables
+      : "memory");
 }
