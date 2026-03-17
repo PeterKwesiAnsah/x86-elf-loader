@@ -97,7 +97,6 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
             if (pht_start[pht_i].p_vaddr > max_vaddr)
             {
                 max_vaddr = pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz;
-                // max_vaddr = ((pht_start[pht_i].p_vaddr + pht_start[pht_i].p_memsz) + page_size - 1) & ~(page_size - 1);
             }
 
             if (pht_start[pht_i].p_vaddr < min_vaddr)
@@ -106,15 +105,14 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
             }
         }
         // else if (pht_start[pht_i].p_type == PT_GNU_STACK){
-        // check to add PROT_EXEC to stack page
+        // check to add PROT_EXEC to the stack segment
         // }
     }
 
-    // loadsegmmap_len = max_vaddr - (min_vaddr & ~(page_size - 1));
     loadsegmmap_len = max_vaddr - (min_vaddr & ~15);
 
     // now we reserve region
-    __uint8_t *segs_addr = mmap(s_addr, loadsegmmap_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    __uint8_t *segs_addr = mmap(s_addr, loadsegmmap_len, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (segs_addr == MAP_FAILED)
     {
         perror("mmap failed reserving memory region");
@@ -133,7 +131,7 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
             Elf64_Addr relap_vadress = pht_start[pht_i].p_vaddr & ~(page_size - 1);
 
             size_t size = (pht_start[pht_i].p_vaddr % page_size) + pht_start[pht_i].p_filesz;
-        
+
             memcpy(baddr + relap_vadress, addr + relap_offset, size);
             int status = mprotect(baddr + relap_vadress, pht_start[pht_i].p_vaddr % page_size + pht_start[pht_i].p_memsz, elf_pflags_to_mmap_prot(pht_start[pht_i].p_flags));
             if (status == -1)
@@ -148,52 +146,6 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     close(fd);
     munmap(addr, fsize);
     return baddr;
-
-    // Elf64_Shdr *sht_start = (Elf64_Shdr *)(addr + ehdr->e_shoff);
-    // /**
-    //  *
-    //  * "The AMD64 LP64 ABI architecture uses only Elf64_Rela relocation en-
-    //     tries with explicit addends. The r_addend member serves as the relocation
-    //     addend."
-    //  */
-    // for (int sht_i = 1; sht_i < ehdr->e_shnum; sht_i++)
-    // {
-    //   if (sht_start[sht_i].sh_type == SHT_RELA)
-    //   {
-    //     int rela_sym_sht_i = sht_start[sht_i].sh_link;
-    //     int rela_num = sht_start[sht_i].sh_size / sht_start[sht_i].sh_entsize;
-    //     Elf64_Rela *relat_start = (Elf64_Rela *)(addr + sht_start[sht_i].sh_offset);
-    //     for (int relat_i = 0; relat_i < rela_num; relat_i++)
-    //     {
-    //       Elf64_Rela *rela = &relat_start[relat_i];
-    //       Elf64_Addr *patch = (Elf64_Addr *)(baddr + rela->r_offset);
-    //       switch (ELF64_R_TYPE(rela->r_info))
-    //       {
-    //       case R_X86_64_RELATIVE:
-    //         *patch = (Elf64_Addr)(baddr + rela->r_addend);
-    //         break;
-    //       case R_X86_64_IRELATIVE:
-    //       {
-    //         Elf64_Addr (*resolver)(void) = (void *)(baddr + rela->r_addend);
-    //         *patch = resolver();
-    //       }
-    //       break;
-    //       case R_X86_64_JUMP_SLOT:
-    //       {
-    //         Elf64_Sym *symt_start = (Elf64_Sym *)(addr + sht_start[rela_sym_sht_i].sh_offset);
-    //         Elf64_Addr value = symt_start[ELF64_R_SYM(rela->r_info)].st_value;
-    //         *patch = (Elf64_Addr)baddr + value;
-    //       }
-    //       break;
-    //       case R_X86_64_NONE:
-    //         break;
-    //       default:
-    //         fprintf(stderr, "Unsupported relocation: %lu\n", ELF64_R_TYPE(rela->r_info));
-    //         return NULL;
-    //       }
-    //     }
-    //   }
-    // }
 }
 
 // Usage ./loader <path-to-elf-file> [CLI args to be passed to during process
@@ -220,7 +172,6 @@ int main(int argc, char **args, char **envp)
     if (interp_baddr == NULL)
         return 1;
 
-#define RANDOM_BYTES_SIZE 16
 #define AUX_VEC_SIZE (AUX_VECTOR_SIZE * sizeof(auxv_t))
 #define ITEMS_SIZE(count) (sizeof(Elf64_Addr) * count)
 
@@ -237,7 +188,7 @@ int main(int argc, char **args, char **envp)
     Elf64_Addr *user_space_stack_vm_end = PROCESS_ABI_HIGHEST_ADDR;
     Elf64_Addr *user_space_stack_vm_start = (Elf64_Addr *)((Elf64_Addr)PROCESS_ABI_HIGHEST_ADDR - stack_arg_size);
 
-    user_space_stack_vm_start = mmap(user_space_stack_vm_start, stack_arg_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    user_space_stack_vm_start = mmap(user_space_stack_vm_start, stack_arg_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_GROWSDOWN | MAP_ANONYMOUS, -1, 0);
     if (user_space_stack_vm_start == MAP_FAILED)
     {
         perror("stack segment mapping failed");
@@ -249,7 +200,7 @@ int main(int argc, char **args, char **envp)
 
     size_t envc = 0;
 
-    char *fn = NULL;
+    char *fn;
 
     // copy args
     while (*t_args)
@@ -292,8 +243,8 @@ int main(int argc, char **args, char **envp)
 #define NEW_AUX_VEC_ENT(a_type, a_val) \
     do                                 \
     {                                  \
-        *--user_aux_vec = (a_type);    \
         *--user_aux_vec = (a_val);     \
+        *--user_aux_vec = (a_type);    \
     } while (0)
 
     NEW_AUX_VEC_ENT(AT_NULL, 0);
@@ -345,13 +296,6 @@ int main(int argc, char **args, char **envp)
     void (*entry_point)(void) = (void (*)(void))((unsigned long)
                                                      interp_baddr +
                                                  (((Elf64_Ehdr *)interp_baddr)->e_entry));
-
-    fprintf(stderr, "interp_baddr = %p\n", interp_baddr);
-    fprintf(stderr, "interp entry = %p\n", entry_point);
-    fprintf(stderr, "main_baddr   = %p\n", main_baddr);
-    fprintf(stderr, "sp           = %p\n", sp);
-    fprintf(stderr, "*sp (argc)   = %lu\n", *sp);
-    fprintf(stderr, "fn = %s\n", fn);
 
     register unsigned long sp_val asm("rax") = (unsigned long)sp;
     register unsigned long entry_val asm("r15") = (unsigned long)entry_point;
