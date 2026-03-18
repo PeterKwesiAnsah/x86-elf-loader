@@ -200,7 +200,7 @@ int main(int argc, char **args, char **envp)
 
     size_t envc = 0;
 
-    char *fn;
+    char *fn = NULL;
 
     // copy args
     while (*t_args)
