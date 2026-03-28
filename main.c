@@ -15,7 +15,7 @@
 #define MIN_ARG_COUNT 2
 #define PROCESS_ABI_HIGHEST_ADDR ((Elf64_Addr *)0x00007fffffffffff)
 #define PROCESS_ABI_TEXT_SEG_ADDR 0x0000000000400000
-
+#define MIN_FILE_SIZE 64
 typedef struct
 {
     int argc;
@@ -70,6 +70,12 @@ static int elf_pflags_to_mmap_prot(int p_flags)
 void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
 {
     off_t fsize = lseek(fd, 0, SEEK_END);
+    if (fsize < MIN_FILE_SIZE)
+    {
+        fprintf(stderr, "File program is too small\n");
+        return NULL;
+    }
+
     __uint8_t *addr = mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 
     if (addr == MAP_FAILED)
@@ -79,6 +85,18 @@ void *LoadET(void *s_addr, int fd, size_t page_size, char **interpath)
     }
 
     Elf64_Ehdr *ehdr = (Elf64_Ehdr *)addr;
+    if (ehdr->e_ident[EI_CLASS] != ELFCLASS64)
+    {
+        fprintf(stderr, "Invalid program class\n");
+        return NULL;
+    }
+
+    if (ehdr->e_machine != EM_X86_64)
+    {
+        fprintf(stderr, "Machine arch should be AMD X86_64");
+        return NULL;
+    }
+
     Elf64_Phdr *pht_start = (Elf64_Phdr *)(addr + ehdr->e_phoff);
 
     Elf64_Addr max_vaddr = 0;

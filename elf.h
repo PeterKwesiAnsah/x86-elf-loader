@@ -20,6 +20,10 @@ enum ElfEI
     // (There’s also EI_NIDENT = 16, but that’s not an index for a specific field)
 };
 
+#define ELFCLASSNONE 0 // Invalid class
+#define ELFCLASS32 1   // 32-bit objects
+#define ELFCLASS64 2   // 64-bit objects
+
 /* Basic ELF types */
 typedef unsigned char Elf64_Byte;
 typedef unsigned short Elf64_Half;
@@ -48,6 +52,8 @@ typedef struct
     Elf64_Half e_shnum;               /* Section header entry count */
     Elf64_Half e_shstrndx;            /* Section header string table index */
 } Elf64_Ehdr;
+
+#define EM_X86_64 62 // AMD x86-64 architecture
 
 typedef struct
 {
@@ -145,7 +151,7 @@ typedef struct
 } Elf64_Rela;
 
 #define ELF64_R_TYPE(i) ((i) & 0xffffffffL)
-#define ELF64_R_SYM(i)     ((i)>>32)
+#define ELF64_R_SYM(i) ((i) >> 32)
 
 #define R_X86_64_NONE 0       // No relocation
 #define R_X86_64_64 1         // Direct 64-bit (S + A)
